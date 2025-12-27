@@ -1,4 +1,5 @@
 import os
+import re
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
@@ -21,11 +22,17 @@ def chunk_text(text: str, chunk_chars: int = 400, overlap: int = 80):
 
 
 def infer_category(filename: str) -> str:
-    # category = prefix before first "-" (fallback: "general")
     base = os.path.splitext(filename)[0]
     if "-" in base:
         return base.split("-", 1)[0].strip().lower() or "general"
     return "general"
+
+
+def nice_title_from_filename(filename: str) -> str:
+    # auth-login-failures.md -> "Auth Login Failures"
+    base = os.path.splitext(filename)[0]
+    base = re.sub(r"[_\-]+", " ", base).strip()
+    return base.title()
 
 
 def load_runbooks(path: str):
@@ -44,6 +51,9 @@ def load_runbooks(path: str):
 
 
 def build_index(runbooks):
+    """
+    Adds runbook metadata into every chunk so questions referencing file names/titles match.
+    """
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
     chunk_records = []
@@ -51,16 +61,22 @@ def build_index(runbooks):
 
     for rb in runbooks:
         rb_chunks = chunk_text(rb["text"], chunk_chars=400, overlap=80)
+
+        # metadata that will be injected into every chunk
+        rb_title = nice_title_from_filename(rb["name"])
+        header = f"Runbook: {rb['name']}\nRunbook Title: {rb_title}\nCategory: {rb['category']}\n\n"
+
         for i, ch in enumerate(rb_chunks):
+            enriched = header + ch
             chunk_records.append(
                 {
                     "runbook": rb["name"],
                     "category": rb["category"],
                     "chunk_id": i,
-                    "text": ch,
+                    "text": enriched,
                 }
             )
-            all_text_chunks.append(ch)
+            all_text_chunks.append(enriched)
 
     emb = model.encode(all_text_chunks).astype("float32")
     norms = np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12

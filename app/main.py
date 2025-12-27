@@ -4,27 +4,19 @@ from app.ingest import load_runbooks, build_index
 from app.retriever import retrieve_with_scores
 from app.qa import answer
 
-CONFIDENCE_THRESHOLD = 0.35
+CONFIDENCE_THRESHOLD = 0.20
 
 
 def top_source_only(retrieved):
-    """
-    Return only the single best runbook source (highest similarity score).
-    """
     best_score, best_rec = max(retrieved, key=lambda x: x[0])
     return f"{best_rec['runbook']} ({best_score:.3f})"
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AI Runbook Reader")
-    parser.add_argument(
-        "--source",
-        action="store_true",
-        help="Print the runbook source used to answer",
-    )
+    parser = argparse.ArgumentParser(description="Runbook AI (CLI)")
+    parser.add_argument("--source", action="store_true", help="Print top runbook source")
     args = parser.parse_args()
 
-    # Load and index runbooks
     runbooks = load_runbooks("data/runbooks")
     index_matrix, chunk_records, model = build_index(runbooks)
 
@@ -33,10 +25,7 @@ if __name__ == "__main__":
         if question.lower() == "exit":
             break
 
-        retrieved = retrieve_with_scores(
-            question, index_matrix, chunk_records, model, k=6
-        )
-
+        retrieved = retrieve_with_scores(question, index_matrix, chunk_records, model, k=6)
         top_score = retrieved[0][0] if retrieved else 0.0
 
         if top_score < CONFIDENCE_THRESHOLD:

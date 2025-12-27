@@ -1,57 +1,46 @@
+import os
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
+# Smaller model = fewer "offloaded to disk" issues on Mac
+MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
 
-PROMPT_TEMPLATE = """You are an SRE assistant.
-Answer ONLY using the runbook context below.
-If the answer is not present, say "Not found in runbook."
+_tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+_model = AutoModelForCausalLM.from_pretrained(
+    MODEL_ID,
+    device_map="auto",
+)
 
-Context:
+
+def answer(question: str, context_chunks: list[str]) -> str:
+    context = "\n\n---\n\n".join(context_chunks[:6])
+
+    prompt = f"""You are an on-call runbook assistant.
+Answer ONLY using the provided runbook context.
+If the answer is not present in the context, respond exactly: Not found in runbook.
+
+Runbook context:
 {context}
 
 Question:
 {question}
 
-Answer:
-"""
+Answer:"""
 
-def _load_model():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-
-    # macOS Metal (MPS) if available, else CPU
-    use_mps = torch.backends.mps.is_available()
-    device = "mps" if use_mps else "cpu"
-
-    # Use dtype (not torch_dtype) to avoid deprecation warning
-    dtype = torch.float16 if use_mps else torch.float32
-
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        dtype=dtype,
-        device_map=device,   # "mps" or "cpu"
-    )
-
-    return tokenizer, model
-
-_TOKENIZER, _MODEL = _load_model()
-
-def answer(question: str, context_chunks: list[str]) -> str:
-    prompt = PROMPT_TEMPLATE.format(
-        context="\n".join(context_chunks),
-        question=question
-    )
-
-    inputs = _TOKENIZER(prompt, return_tensors="pt")
-    inputs = {k: v.to(_MODEL.device) for k, v in inputs.items()}
+    inputs = _tokenizer(prompt, return_tensors="pt")
+    inputs = {k: v.to(_model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
-        outputs = _MODEL.generate(
+        outputs = _model.generate(
             **inputs,
-            max_new_tokens=180,
-            do_sample=False,   # deterministic, cleaner
+            max_new_tokens=160,
+            do_sample=False,  # deterministic
         )
 
-    text = _TOKENIZER.decode(outputs[0], skip_special_tokens=True)
-    return text.split("Answer:")[-1].strip()
+    text = _tokenizer.decode(outputs[0], skip_special_tokens=True)
+    if "Answer:" in text:
+        text = text.split("Answer:", 1)[1].strip()
+    return text.strip()
 

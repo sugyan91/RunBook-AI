@@ -2,12 +2,15 @@ import numpy as np
 
 
 def retrieve_with_scores(question, index_matrix, chunk_records, model, k=6, category=None):
+    """
+    Returns list of (score, rec) where rec has {runbook, category, chunk_id, text}.
+    If category is provided and not 'all', restrict retrieval to that category.
+    """
     q = model.encode([question]).astype("float32")[0]
     q = q / (np.linalg.norm(q) + 1e-12)
 
-    sims = index_matrix @ q  # cosine similarities for all chunks
+    sims = index_matrix @ q  # cosine similarity for all chunks
 
-    # Filter indices by category if provided
     if category and category != "all":
         valid_idx = [i for i, rec in enumerate(chunk_records) if rec["category"] == category]
         if not valid_idx:
