@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtual env
+venv/
+.env
+.env.*
+
+# OS files
+.DS_Store
+
+# Streamlit
+.streamlit/
+
+# Model caches (optional, but recommended)
+.cache/
+**/.cache/
+~/Library/Caches/
+
+# Jupyter
+.ipynb_checkpoints/
+
