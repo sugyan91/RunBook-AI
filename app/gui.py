@@ -7,7 +7,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Force CWD to project root so relative paths work in Streamlit
 os.chdir(ROOT)
 # ------------------------------------------------------
 
@@ -38,23 +37,14 @@ def extract_h1_title(text: str) -> str:
 
 
 def normalize(s: str) -> str:
-    s = s.lower()
+    s = (s or "").lower()
     s = re.sub(r"[^a-z0-9\s\-]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
 def best_runbook_match(question: str, runbooks: list[dict], min_ratio: float = 0.55):
-    """
-    If user mentions a runbook by name/title, route directly.
-    Uses fuzzy match against:
-      - filename (without extension)
-      - markdown H1 title (if present)
-      - full filename
-    Returns: (matched_runbook_name, match_ratio) or (None, 0.0)
-    """
     qn = normalize(question)
-
     best_name = None
     best_ratio = 0.0
 
@@ -62,18 +52,13 @@ def best_runbook_match(question: str, runbooks: list[dict], min_ratio: float = 0
         fname = rb["name"]
         base = os.path.splitext(fname)[0]
         h1 = extract_h1_title(rb["text"])
-
-        candidates = [fname, base, h1]
-        for c in candidates:
+        for c in (fname, base, h1):
             cn = normalize(c)
             if not cn:
                 continue
             ratio = difflib.SequenceMatcher(None, qn, cn).ratio()
-
-            # Also boost if candidate words appear inside question (common for "X - Y" titles)
-            if cn and cn in qn:
+            if cn in qn:
                 ratio = max(ratio, 0.85)
-
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_name = fname
@@ -92,9 +77,8 @@ def extract_sections(text: str) -> set[str]:
     return sections
 
 
-def build_suggestions_from_runbooks(runbooks, max_per_category=3):
+def build_suggestions_from_runbooks(runbooks, max_per_category=4):
     sug = defaultdict(list)
-
     for rb in runbooks:
         title = extract_h1_title(rb["text"]) or os.path.splitext(rb["name"])[0].replace("-", " ")
         secs = extract_sections(rb["text"])
@@ -111,13 +95,13 @@ def build_suggestions_from_runbooks(runbooks, max_per_category=3):
             candidates.append(f"What are the symptoms of {title}?")
 
         for c in candidates:
-            if len(sug[cat]) < max_per_category and c not in sug[cat]:
+            if c not in sug[cat] and len(sug[cat]) < max_per_category:
                 sug[cat].append(c)
 
     sug["all"] = []
     for cat in sorted(sug.keys()):
         for s in sug[cat]:
-            if len(sug["all"]) < 6 and s not in sug["all"]:
+            if len(sug["all"]) < 8 and s not in sug["all"]:
                 sug["all"].append(s)
 
     return dict(sug)
@@ -142,12 +126,8 @@ def detect_category(question: str, available_categories: list[str]) -> str:
             for rgx in regexes:
                 if re.search(rgx, q):
                     return cat
+
     return "all"
-
-
-def top_source_only(retrieved):
-    best_score, best_rec = max(retrieved, key=lambda x: x[0])
-    return best_rec["runbook"], best_score
 
 
 @st.cache_resource
@@ -155,8 +135,19 @@ def init_engine(_signature: tuple, runbooks_dir_str: str):
     runbooks = load_runbooks(runbooks_dir_str)
     index_matrix, chunk_records, model = build_index(runbooks)
     categories = sorted({rec["category"] for rec in chunk_records})
-    suggestions_map = build_suggestions_from_runbooks(runbooks, max_per_category=3)
+    suggestions_map = build_suggestions_from_runbooks(runbooks, max_per_category=4)
     return runbooks, index_matrix, chunk_records, model, categories, suggestions_map
+
+
+def top_source_only(retrieved):
+    best_score, best_rec = max(retrieved, key=lambda x: x[0])
+    return best_rec["runbook"], best_score
+
+
+# ✅ Streamlit-safe callback to set the text input value
+def set_question(q: str):
+    st.session_state["question_value"] = q
+    st.session_state["run_now"] = True
 
 
 # ---------- UI ----------
@@ -172,20 +163,23 @@ runbooks, index_matrix, chunk_records, model, categories, suggestions_map = init
 # Session state
 if "history" not in st.session_state:
     st.session_state.history = []
-if "question_prefill" not in st.session_state:
-    st.session_state.question_prefill = ""
+if "question_value" not in st.session_state:
+    st.session_state.question_value = ""
+if "run_now" not in st.session_state:
+    st.session_state.run_now = False
 
 # Sidebar sanity
 st.sidebar.caption(f"runbooks={len(runbooks)}  chunks={len(chunk_records)}")
 
-question = st.text_input(
+# Text input (bound to session state)
+st.text_input(
     "Ask a question",
-    value=st.session_state.question_prefill,
+    key="question_value",
     placeholder="e.g., first step to troubleshoot login issues",
 )
-st.session_state.question_prefill = ""
+question = (st.session_state.question_value or "").strip()
 
-detected = detect_category(question, categories) if question.strip() else "all"
+detected = detect_category(question, categories) if question else "all"
 
 st.sidebar.header("Detected category")
 st.sidebar.write(detected)
@@ -194,7 +188,7 @@ st.sidebar.header("Recent questions")
 for q in st.session_state.history[-10:][::-1]:
     st.sidebar.write(f"• {q}")
 
-# Suggestions derived from actual runbooks
+# Suggestions
 st.markdown("**Suggested questions (based on your runbooks)**")
 use_cat = detected if detected in suggestions_map else "all"
 sugs = suggestions_map.get(use_cat, suggestions_map.get("all", []))
@@ -202,23 +196,33 @@ sugs = suggestions_map.get(use_cat, suggestions_map.get("all", []))
 if sugs:
     cols = st.columns(min(3, len(sugs)))
     for i, s in enumerate(sugs[:3]):
-        if cols[i].button(s, use_container_width=True):
-            st.session_state.question_prefill = s
-            st.rerun()
+        cols[i].button(
+            s,
+            use_container_width=True,
+            key=f"sug_{i}",
+            on_click=set_question,
+            args=(s,),
+        )
+else:
+    st.info("No suggestions available yet. Add runbooks in data/runbooks/.")
 
 with st.expander("Advanced (optional)"):
     show_source = st.checkbox("Show source", value=True)
     short_answer = st.checkbox("Short answer", value=True)
-    show_debug = st.checkbox("Show debug", value=True)
+    show_debug = st.checkbox("Show debug", value=False)
 
-if st.button("Get answer", type="primary", disabled=not question.strip()):
-    st.session_state.history.append(question.strip())
+clicked = st.button("Get answer", type="primary", disabled=not question)
+should_run = clicked or st.session_state.run_now
 
-    # 0) If user appears to name a runbook, route directly (bypass similarity gate)
+if should_run:
+    st.session_state.run_now = False
+    if question:
+        st.session_state.history.append(question)
+
+    # 0) Route directly if runbook name/title is mentioned
     matched_rb, rb_ratio = best_runbook_match(question, runbooks, min_ratio=0.55)
 
     if matched_rb:
-        # Use only chunks from that runbook (still grounded, deterministic)
         rb_chunks = [rec["text"] for rec in chunk_records if rec["runbook"] == matched_rb]
 
         q_for_model = question
@@ -228,17 +232,17 @@ if st.button("Get answer", type="primary", disabled=not question.strip()):
         resp = answer(q_for_model, rb_chunks)
         resp = resp.replace("Not found in runbook.", "").strip()
 
+        if show_debug:
+            st.caption(f"debug: routed_runbook={matched_rb}, match_ratio={rb_ratio:.3f}, chunks_used={len(rb_chunks)}")
+
         st.success(resp)
         st.text_area("Answer (copy if needed)", value=resp, height=120)
 
         if show_source:
             st.caption(f"Source: {matched_rb} (routed, match={rb_ratio:.3f})")
 
-        if show_debug:
-            st.caption(f"debug: routed_runbook={matched_rb}, match_ratio={rb_ratio:.3f}, chunks_used={len(rb_chunks)}")
-
     else:
-        # 1) Normal semantic retrieval: detected category -> fallback to all
+        # 1) Semantic retrieval: detected category first, then fall back to all
         category_used = detected
 
         retrieved = retrieve_with_scores(
